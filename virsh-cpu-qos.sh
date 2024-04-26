@@ -3,16 +3,16 @@
 # Configuration
 monitor_folder="/var/vm_cpu_qos/vm_cpu_monitor"
 log_file="/var/vm_cpu_qos/vm_cpu_log.log"
-host_cpu_threshold=400    # Total host CPU threshold to start limiting VMs (e.g., for 4 cores, 400%)
-vm_cpu_high_threshold=50  # VM CPU usage high threshold
-vm_cpu_low_threshold=50   # VM CPU usage low threshold
-burst_score_cap=100       # Max burst score a VM can accumulate
-score_increase_factor=2   # Increment for score when high threshold exceeded
-score_decrease_factor=1   # Decrement for score when below low threshold
-limit_duration=20         # Score threshold for limiting
-restore_duration=20       # Score threshold for restoring
-quota_per_vcore=20        # CPU quota percentage per vCore when limiting
-quota_per_vcore_orig=100  # CPU quota percentage per vCore without limit
+host_cpu_threshold=400      # Total host CPU threshold to start limiting VMs (e.g., for 4 cores, 400%)
+vm_vcore_high_threshold=25  # VM CPU usage high threshold per vCore
+vm_vcore_low_threshold=25   # VM CPU usage low threshold per vCore
+burst_score_cap=100         # Max burst score a VM can accumulate
+score_increase_factor=2     # Increment for score when high threshold exceeded
+score_decrease_factor=1     # Decrement for score when below low threshold
+limit_duration=20           # Score threshold for limiting
+restore_duration=20         # Score threshold for restoring
+quota_per_vcore=25          # CPU quota percentage per vCore when limiting
+quota_per_vcore_orig=100    # CPU quota percentage per vCore without limit
 
 
 # Create directory and log file if they don't exist
@@ -43,6 +43,16 @@ virsh list --name | while read vm; do
     burst_score=$(cat $score_file)
     last_state=$(cat $state_file)
 
+    # Get the number of vCores for the VM and calculate the quota
+    vcores=$(virsh dominfo $vm | grep 'CPU(s)' | awk '{print $2}')
+    new_quota=$(($vcores * quota_per_vcore * 1000))
+    orig_quota=$(($vcores * quota_per_vcore_orig * 1000))
+
+    # calculate the sum of vcore totall threshold
+    vm_cpu_high_threshold=$(echo "$vcores * $vm_vcore_high_threshold" | bc)
+    vm_cpu_low_threshold=$(echo "$vcores * $vm_vcore_low_threshold" | bc)
+
+
     # Get VM CPU usage
     # First get the each CPU PID from virsh
     vm_pid=$(ps -ef | grep qemu | grep ${vm} | awk '{print $2}')
@@ -52,8 +62,11 @@ virsh list --name | while read vm; do
     vm_cpu_usage=$(echo "$vm_cpu_usage + ${cpu_usage:-0}" | bc)
     echo "${vm} CPU: ${vm_cpu_usage}"
     # Update burst score
+
+
+
     # Ensure vm_cpu_usage is a number; if not, set it to 0
-    if (( $(echo "$vm_cpu_usage > $vm_cpu_high_threshold" | bc -l) )); then
+    if (( $(echo "$vm_cpu_usage >= $vm_cpu_high_threshold" | bc -l) )); then
       burst_score=$((burst_score + score_increase_factor))
       burst_score=$((burst_score > burst_score_cap ? burst_score_cap : burst_score))
       echo $burst_score > $score_file
@@ -65,10 +78,7 @@ virsh list --name | while read vm; do
       echo $burst_score > $score_file
       echo "${vm} decrease burst_score: ${burst_score}"
     fi
-    # Get the number of vCores for the VM and calculate the quota
-    vcores=$(virsh dominfo $vm | grep 'CPU(s)' | awk '{print $2}')
-    new_quota=$(($vcores * quota_per_vcore * 1000))
-    orig_quota=$(($vcores * quota_per_vcore_orig * 1000))
+
 
     # Check host CPU usage and apply limits
     if (( $(echo "$normalized_host_cpu_usage > $host_cpu_threshold" | bc -l) )); then
